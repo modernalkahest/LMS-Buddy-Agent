@@ -112,6 +112,14 @@ def create_drive_doc(title: str, content: str) -> str:
     return f"Created Google Doc '{doc['name']}': {doc['webViewLink']}"
 
 
+def build_agent():
+    return create_agent(
+        model=ChatOpenAI(model=MODEL),
+        tools=[search_drive, list_indexed_files, sync_drive, create_drive_doc],
+        system_prompt=SYSTEM_PROMPT,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--sync", action="store_true", help="Rebuild the index from Drive before chatting")
@@ -120,11 +128,7 @@ def main():
     if args.sync or index.store is None:
         index.sync()
 
-    agent = create_agent(
-        model=ChatOpenAI(model=MODEL),
-        tools=[search_drive, list_indexed_files, sync_drive, create_drive_doc],
-        system_prompt=SYSTEM_PROMPT,
-    )
+    agent = build_agent()
 
     print("\nLMS Buddy ready. Ask about your Drive files (Ctrl+C or 'exit' to quit).\n")
     messages = []

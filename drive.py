@@ -35,9 +35,27 @@ TEXT_MIMES = {"text/plain", "text/markdown", "text/csv"}
 SUPPORTED_MIMES = set(EXPORT_MIME) | {PDF_MIME, DOCX_MIME} | TEXT_MIMES
 
 
+def _creds_from_env() -> Credentials | None:
+    """Build credentials from the GOOGLE_TOKEN_JSON env var (the contents of token.json), for hosted
+    deployments such as Streamlit Cloud where there is no browser to run the OAuth flow."""
+    raw = os.getenv("GOOGLE_TOKEN_JSON")
+    if not raw:
+        return None
+    info = json.loads(raw)
+    if not set(SCOPES) <= set(info.get("scopes", [])):
+        raise RuntimeError("GOOGLE_TOKEN_JSON was not granted the required Drive scopes; re-authorize locally.")
+    creds = Credentials.from_authorized_user_info(info, SCOPES)
+    if not creds.valid:
+        creds.refresh(Request())  # kept in memory only; the refresh token in the secret stays valid
+    return creds
+
+
 def get_drive_service(credentials_path: str = "credentials.json", token_path: str = "token.json"):
     """Return an authenticated Drive v3 client, running the OAuth browser flow on first use."""
-    creds = None
+    creds = _creds_from_env()
+    if creds:
+        return build("drive", "v3", credentials=creds, cache_discovery=False)
+
     if os.path.exists(token_path):
         creds = Credentials.from_authorized_user_file(token_path, SCOPES)
         # A token saved before the write scope was added must be re-authorized. Compare against the scopes

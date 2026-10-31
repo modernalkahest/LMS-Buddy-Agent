@@ -48,3 +48,22 @@ You can also ask the agent to "re-sync my Drive" during a chat.
 | `drive.py` | OAuth, recursive folder listing, download/export, and conversion to LangChain `Document`s (PDFs split by page) |
 | `vectorstore.py` | Chunks text (1000 chars, 150 overlap), embeds it with OpenAI `text-embedding-3-small`, and saves/loads the FAISS index in `faiss_index/` |
 | `agent.py` | `create_agent` with `ChatOpenAI` (`gpt-5` by default, set `OPENAI_MODEL` to change) and three tools: `search_drive`, `list_indexed_files`, `sync_drive` |
+
+## Streamlit app
+
+```bash
+streamlit run app.py
+```
+
+Locally it reads `.env`, `credentials.json` and `token.json` as before.
+
+### Deploy to Streamlit Cloud
+
+Streamlit Cloud has no browser for the Google OAuth flow and doesn't have your gitignored files, so everything comes from **Settings → Secrets**:
+
+1. Run `python agent.py` locally once so `token.json` exists.
+2. Push the repo to GitHub (the secret files stay ignored) and create the app with `app.py` as the main file.
+3. In **Settings → Secrets**, paste `.streamlit/secrets.toml.example` and fill it in. Copy `token`, `refresh_token`, `client_id` and `client_secret` from `token.json` into `[google_token]`.
+4. Set `APP_PASSWORD`. Without it anyone with the URL can query your Drive.
+
+The FAISS index lives on ephemeral disk, so the app rebuilds it from Drive on the first load after each restart (use **Sync Drive** in the sidebar to refresh). Keep your OAuth consent screen's publishing status at "In production", otherwise Google expires refresh tokens after 7 days.
