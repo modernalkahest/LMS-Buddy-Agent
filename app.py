@@ -82,16 +82,14 @@ def get_agent():
 
 def sync_drive() -> int:
     count = agent.index.sync()
-    st.session_state.courses = load_courses()
+    load_courses.clear()
     return count
 
 
+@st.cache_data(ttl=600, show_spinner="Loading your courses…")
 def load_courses() -> dict[str, list[dict]]:
-    try:
-        return list_course_tree(get_drive_service(), agent.FOLDER_ID)
-    except Exception as e:
-        st.warning(f"Could not list your courses: {e}")
-        return {}
+    """Crawling Drive is slow, so the result is shared across sessions and reused for 10 minutes."""
+    return list_course_tree(get_drive_service(), agent.FOLDER_ID)
 
 
 def tool_calls(messages) -> list[str]:
@@ -134,9 +132,11 @@ if not st.session_state.get("index_checked"):
             st.stop()
     st.session_state.index_checked = True
 
-if "courses" not in st.session_state:
-    st.session_state.courses = load_courses()
-courses: dict[str, list[dict]] = st.session_state.courses
+try:
+    courses: dict[str, list[dict]] = load_courses()
+except Exception as e:
+    st.warning(f"Could not list your courses: {e}")
+    courses = {}
 
 # "history" is the full LangChain message list (incl. tool calls) sent to the agent; "messages" is what we display.
 st.session_state.setdefault("messages", [])
