@@ -3,6 +3,8 @@
 import io
 import json
 import os
+import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from docx import Document as DocxDocument
 from google.auth.transport.requests import Request
@@ -82,6 +84,17 @@ def get_drive_service(credentials_path: str = "credentials.json", token_path: st
     return build("drive", "v3", credentials=creds)
 
 
+_local = threading.local()
+MAX_WORKERS = 8
+
+
+def _thread_service():
+    """One Drive client per worker thread: googleapiclient's httplib2 transport is not thread-safe."""
+    if not hasattr(_local, "service"):
+        _local.service = get_drive_service()
+    return _local.service
+
+
 def create_google_doc(service, title: str, content: str, folder_id: str | None = None) -> dict:
     """Create a Google Doc from plain text, inside folder_id when given (else My Drive root)."""
     metadata = {"name": title, "mimeType": "application/vnd.google-apps.document"}
@@ -132,7 +145,7 @@ def list_course_tree(service, folder_id: str | None = None) -> dict[str, list[di
     """Crawl Drive and group every file into courses: each subfolder of folder_id is a course holding its files (nested
     folders flattened); files sitting directly in folder_id go under "General"."""
     parent = folder_id or "root"
-    courses: dict[str, list[dict]] = {}
+    subfolders: dict[str, str] = {}
     loose, page_token = [], None
     while True:
         resp = service.files().list(
@@ -145,12 +158,16 @@ def list_course_tree(service, folder_id: str | None = None) -> dict[str, list[di
         ).execute()
         for f in resp.get("files", []):
             if f["mimeType"] == FOLDER_MIME:
-                courses[f["name"]] = list_files(service, f["id"], supported_only=False)
+                subfolders[f["name"]] = f["id"]
             else:
                 loose.append(f)
         page_token = resp.get("nextPageToken")
         if not page_token:
             break
+    # Each course folder is crawled in its own thread; the Drive calls are network-bound.
+    with ThreadPoolExecutor(MAX_WORKERS) as pool:
+        crawled = pool.map(lambda fid: list_files(_thread_service(), fid, supported_only=False), subfolders.values())
+        courses = dict(zip(subfolders, crawled))
     if loose:
         courses["General"] = loose
     return {name: sorted(files, key=lambda f: f["name"].lower()) for name, files in sorted(courses.items())}
@@ -198,12 +215,17 @@ def file_to_documents(service, file: dict) -> list[Document]:
 
 
 def load_drive_documents(service, folder_id: str | None = None) -> list[Document]:
-    """Fetch every supported file under folder_id and return them as Documents."""
-    docs = []
-    for file in list_files(service, folder_id):
+    """Fetch every supported file under folder_id and return them as Documents, downloading in parallel."""
+
+    def load(file: dict) -> list[Document]:
         try:
-            docs.extend(file_to_documents(service, file))
+            docs = file_to_documents(_thread_service(), file)
             print(f"  loaded: {file['name']}")
+            return docs
         except Exception as e:  # one bad file shouldn't abort the whole sync
             print(f"  skipped {file['name']}: {e}")
-    return docs
+            return []
+
+    files = list_files(service, folder_id)
+    with ThreadPoolExecutor(MAX_WORKERS) as pool:
+        return [doc for docs in pool.map(load, files) for doc in docs]

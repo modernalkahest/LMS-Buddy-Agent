@@ -1,8 +1,10 @@
 """Streamlit frontend for LMS Buddy. Configuration comes from Streamlit secrets (see .streamlit/secrets.toml.example)."""
 
+import asyncio
 import hmac
 import json
 import os
+import time
 
 import streamlit as st
 from dotenv import load_dotenv
@@ -80,16 +82,33 @@ def get_agent():
     return agent.build_agent()
 
 
-def sync_drive() -> int:
-    count = agent.index.sync()
-    load_courses.clear()
-    return count
+@st.cache_resource
+def _courses_cache() -> dict:
+    return {"at": 0.0, "value": None}
 
 
-@st.cache_data(ttl=600, show_spinner="Loading your courses…")
+def _crawl_courses() -> dict[str, list[dict]]:
+    return list_course_tree(get_drive_service(), agent.FOLDER_ID)
+
+
 def load_courses() -> dict[str, list[dict]]:
     """Crawling Drive is slow, so the result is shared across sessions and reused for 10 minutes."""
-    return list_course_tree(get_drive_service(), agent.FOLDER_ID)
+    cache = _courses_cache()
+    if cache["value"] is None or time.time() - cache["at"] > 600:
+        cache["value"], cache["at"] = _crawl_courses(), time.time()
+    return cache["value"]
+
+
+async def _sync_and_crawl() -> tuple[int, dict]:
+    # The index rebuild and the course crawl are independent, so run them at the same time.
+    return await asyncio.gather(asyncio.to_thread(agent.index.sync), asyncio.to_thread(_crawl_courses))
+
+
+def sync_drive() -> int:
+    count, courses = asyncio.run(_sync_and_crawl())
+    cache = _courses_cache()
+    cache["value"], cache["at"] = courses, time.time()
+    return count
 
 
 def tool_calls(messages) -> list[str]:
