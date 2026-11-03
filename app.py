@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 
 load_dotenv()  # local runs; on Streamlit Cloud there is no .env and secrets are used instead
 
-st.set_page_config(page_title="LMS Buddy", page_icon="📚", layout="centered")
+st.set_page_config(page_title="LMS Buddy", page_icon="📚", layout="wide")
 
 
 def load_secrets_into_env() -> None:
@@ -52,6 +52,27 @@ if not os.getenv("OPENAI_API_KEY"):
 check_password()
 
 import agent  # noqa: E402  (must import after secrets are in the environment)
+from drive import get_drive_service, list_course_tree  # noqa: E402
+
+
+CSS = """
+<style>
+.block-container {padding-top: 2rem; max-width: 1400px;}
+.pill {display:inline-block; padding:2px 12px; border-radius:999px; font-size:.85rem;
+       background:rgba(76,175,80,.18); color:#4caf50;}
+div[data-testid="stButton"] > button {text-align:left; justify-content:flex-start; border-radius:12px;}
+.suggest div[data-testid="stButton"] > button {background:#000; color:inherit; border:none; width:100%; padding:.8rem 1rem;}
+.course div[data-testid="stButton"] > button {width:100%; padding:1rem; white-space:pre-line;}
+</style>
+"""
+st.markdown(CSS, unsafe_allow_html=True)
+
+SUGGESTIONS = [
+    "Why am I learning {course}?",
+    "What are the prerequisites for this module?",
+    "Explain the learning objectives.",
+    "How is this topic used in industry?",
+]
 
 
 @st.cache_resource(show_spinner="Starting LMS Buddy…")
@@ -60,11 +81,46 @@ def get_agent():
 
 
 def sync_drive() -> int:
-    return agent.index.sync()
+    count = agent.index.sync()
+    st.session_state.courses = load_courses()
+    return count
+
+
+def load_courses() -> dict[str, list[dict]]:
+    try:
+        return list_course_tree(get_drive_service(), agent.FOLDER_ID)
+    except Exception as e:
+        st.warning(f"Could not list your courses: {e}")
+        return {}
 
 
 def tool_calls(messages) -> list[str]:
     return [call["name"] for m in messages if getattr(m, "tool_calls", None) for call in m.tool_calls]
+
+
+def ask(question: str, course: str | None, course_files: list[dict]) -> None:
+    """Send a question to the agent; the selected course is passed as context but not shown in the chat."""
+    st.session_state.messages.append({"role": "user", "content": question})
+    with st.chat_message("user"):
+        st.markdown(question)
+    with st.chat_message("assistant"):
+        try:
+            with st.spinner("Thinking…"):
+                prompt = question
+                if course:
+                    names = ", ".join(f["name"] for f in course_files)
+                    prompt = f"[The student has the course '{course}' open. Its files: {names}. Focus on these.]\n\n{question}"
+                history = st.session_state.history + [{"role": "user", "content": prompt}]
+                result = get_agent().invoke({"messages": history})
+            answer = result["messages"][-1].text
+            tools = tool_calls(result["messages"][len(history):])
+            st.session_state.history = result["messages"]
+        except Exception as e:
+            answer, tools = f"Something went wrong: {e}", []
+        st.markdown(answer)
+        if tools:
+            st.caption("🔧 " + ", ".join(tools))
+    st.session_state.messages.append({"role": "assistant", "content": answer, "tools": tools})
 
 
 # Streamlit Cloud's disk is ephemeral, so the index is rebuilt from Drive after each restart.
@@ -78,16 +134,43 @@ if not st.session_state.get("index_checked"):
             st.stop()
     st.session_state.index_checked = True
 
-with st.sidebar:
-    st.header("📚 LMS Buddy")
-    if agent.index.store is not None:
-        files = {d.metadata["source"] for d in agent.index.store.docstore._dict.values()}
-        st.caption(f"{len(files)} files indexed")
-        with st.expander("Indexed files"):
-            st.write("\n".join(f"- {f}" for f in sorted(files)))
-    else:
-        st.caption("No files indexed yet")
-    if st.button("🔄 Sync Drive", use_container_width=True):
+if "courses" not in st.session_state:
+    st.session_state.courses = load_courses()
+courses: dict[str, list[dict]] = st.session_state.courses
+
+# "history" is the full LangChain message list (incl. tool calls) sent to the agent; "messages" is what we display.
+st.session_state.setdefault("messages", [])
+st.session_state.setdefault("history", [])
+if st.session_state.get("selected") not in courses:
+    st.session_state.selected = next(iter(courses), None)
+selected = st.session_state.selected
+course_files = courses.get(selected, [])
+
+st.subheader("LMS Buddy")
+left, right = st.columns([5, 8], gap="large")
+
+with left:
+    st.markdown("### My Learning Modules")
+    if not courses:
+        st.info("No course folders found in your Drive yet.")
+    for name, files in courses.items():
+        with st.container(key=f"course_{name}"):
+            st.markdown('<div class="course">', unsafe_allow_html=True)
+            label = f"📖  **{name}**\n\n{len(files)} resources" + ("  ·  ✅ Selected" if name == selected else "")
+            if st.button(label, key=f"pick_{name}", type="primary" if name == selected else "secondary"):
+                st.session_state.selected = name
+                st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.divider()
+    if selected:
+        st.markdown("### Selected module")
+        st.markdown(f"**{selected}**")
+        for f in course_files:
+            icon = "📄" if f["mimeType"] in ("application/pdf", "application/vnd.google-apps.document") else "📁"
+            st.markdown(f"{icon} [{f['name']}]({f['webViewLink']})" if f.get("webViewLink") else f"{icon} {f['name']}")
+    c1, c2 = st.columns(2)
+    if c1.button("🔄 Sync Drive", use_container_width=True):
         try:
             with st.spinner("Syncing…"):
                 count = sync_drive()
@@ -95,40 +178,36 @@ with st.sidebar:
             st.rerun()
         except Exception as e:
             st.error(f"Sync failed: {e}")
-    if st.button("🗑️ Clear chat", use_container_width=True):
-        st.session_state.pop("messages", None)
-        st.session_state.pop("history", None)
+    if c2.button("🗑️ Clear chat", use_container_width=True):
+        st.session_state.messages, st.session_state.history = [], []
         st.rerun()
 
-st.title("LMS Buddy")
-st.caption("Ask questions about your Google Drive course material.")
+with right:
+    with st.container(border=True):
+        st.markdown("### LMS Buddy")
+        st.markdown('<span class="pill">Ready to help</span>', unsafe_allow_html=True)
+        st.divider()
 
-# "history" is the full LangChain message list (incl. tool calls) sent to the agent; "messages" is what we display.
-st.session_state.setdefault("messages", [])
-st.session_state.setdefault("history", [])
+        pending = st.session_state.pop("pending", None)
+        with st.container(height=520, border=False):
+            if not st.session_state.messages and not pending:
+                st.markdown("#### What would you like to explore?")
+                st.caption("Suggested questions")
+                st.markdown('<div class="suggest">', unsafe_allow_html=True)
+                for i, template in enumerate(SUGGESTIONS):
+                    text = template.format(course=selected or "this subject")
+                    if st.button(text, key=f"sugg_{i}", use_container_width=True):
+                        st.session_state.pending = text
+                        st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
+            for m in st.session_state.messages:
+                with st.chat_message(m["role"]):
+                    st.markdown(m["content"])
+                    if m.get("tools"):
+                        st.caption("🔧 " + ", ".join(m["tools"]))
+            if pending:
+                ask(pending, selected, course_files)
 
-for m in st.session_state.messages:
-    with st.chat_message(m["role"]):
-        st.markdown(m["content"])
-        if m.get("tools"):
-            st.caption("🔧 " + ", ".join(m["tools"]))
-
-if question := st.chat_input("Ask about your files…"):
-    st.session_state.messages.append({"role": "user", "content": question})
-    with st.chat_message("user"):
-        st.markdown(question)
-
-    with st.chat_message("assistant"):
-        try:
-            with st.spinner("Thinking…"):
-                history = st.session_state.history + [{"role": "user", "content": question}]
-                result = get_agent().invoke({"messages": history})
-            answer = result["messages"][-1].text
-            tools = tool_calls(result["messages"][len(history):])
-            st.session_state.history = result["messages"]
-        except Exception as e:
-            answer, tools = f"Something went wrong: {e}", []
-        st.markdown(answer)
-        if tools:
-            st.caption("🔧 " + ", ".join(tools))
-    st.session_state.messages.append({"role": "assistant", "content": answer, "tools": tools})
+        if question := st.chat_input("Ask your tutor a question…"):
+            st.session_state.pending = question
+            st.rerun()

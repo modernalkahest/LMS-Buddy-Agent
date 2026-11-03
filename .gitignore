@@ -5,3 +5,4 @@ credentials.json
 token.json
 faiss_index/
 .streamlit/secrets.toml
+.venv

@@ -94,8 +94,12 @@ def create_google_doc(service, title: str, content: str, folder_id: str | None =
     ).execute()
 
 
-def list_files(service, folder_id: str | None = None, recursive: bool = True) -> list[dict]:
-    """List supported files in a folder (and its subfolders), or across the whole Drive if no folder is given."""
+def list_files(
+    service, folder_id: str | None = None, recursive: bool = True, supported_only: bool = True
+) -> list[dict]:
+    """List files in a folder (and its subfolders), or across the whole Drive if no folder is given.
+
+    supported_only=False returns every file regardless of type (used to count a course's resources)."""
     query = "trashed = false"
     if folder_id:
         query += f" and '{folder_id}' in parents"
@@ -115,13 +119,41 @@ def list_files(service, folder_id: str | None = None, recursive: bool = True) ->
             if f["mimeType"] == FOLDER_MIME:
                 # Without a folder_id the query already spans every folder.
                 if folder_id and recursive:
-                    files.extend(list_files(service, f["id"], recursive))
-            elif f["mimeType"] in SUPPORTED_MIMES:
+                    files.extend(list_files(service, f["id"], recursive, supported_only))
+            elif not supported_only or f["mimeType"] in SUPPORTED_MIMES:
                 files.append(f)
 
         page_token = resp.get("nextPageToken")
         if not page_token:
             return files
+
+
+def list_course_tree(service, folder_id: str | None = None) -> dict[str, list[dict]]:
+    """Crawl Drive and group every file into courses: each subfolder of folder_id is a course holding its files (nested
+    folders flattened); files sitting directly in folder_id go under "General"."""
+    parent = folder_id or "root"
+    courses: dict[str, list[dict]] = {}
+    loose, page_token = [], None
+    while True:
+        resp = service.files().list(
+            q=f"trashed = false and '{parent}' in parents",
+            fields="nextPageToken, files(id, name, mimeType, modifiedTime, webViewLink)",
+            pageSize=100,
+            pageToken=page_token,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        for f in resp.get("files", []):
+            if f["mimeType"] == FOLDER_MIME:
+                courses[f["name"]] = list_files(service, f["id"], supported_only=False)
+            else:
+                loose.append(f)
+        page_token = resp.get("nextPageToken")
+        if not page_token:
+            break
+    if loose:
+        courses["General"] = loose
+    return {name: sorted(files, key=lambda f: f["name"].lower()) for name, files in sorted(courses.items())}
 
 
 def _download(service, file: dict) -> bytes:
