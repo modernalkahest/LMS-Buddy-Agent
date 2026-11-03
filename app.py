@@ -68,13 +68,16 @@ CSS = """
        background:rgba(76,175,80,.18); color:#4caf50;}
 div[data-testid="stButton"] > button {text-align:left; justify-content:flex-start; border-radius:12px;}
 @media (min-width: 992px) {
-  /* Pin the chat column; the page scroll then only moves the left column. */
-  .st-key-main_row [data-testid="stColumn"]:last-child,
-  .st-key-main_row [data-testid="column"]:last-child {
-    position: sticky; top: 4rem; align-self: flex-start;
-  }
-  .st-key-chat_scroll {height: calc(100vh - 21rem) !important; min-height: 280px;}
+  /* Fixed single-screen layout: the page itself never scrolls. */
+  html, body, [data-testid="stApp"], [data-testid="stAppViewContainer"], [data-testid="stMain"] {overflow: hidden !important;}
+  .block-container {padding-top: 3.5rem; padding-bottom: 0;}
+  .st-key-chat_scroll {height: calc(100vh - 26rem) !important; min-height: 200px;}
+  .st-key-left_scroll {height: calc(100vh - 14rem) !important; min-height: 240px;}
 }
+/* Panes that overflow still scroll with the wheel/trackpad, but without visible scrollbars. */
+.st-key-chat_scroll, .st-key-left_scroll {scrollbar-width: none;}
+.st-key-chat_scroll::-webkit-scrollbar, .st-key-left_scroll::-webkit-scrollbar {display: none;}
+.st-key-chat_scroll *, .st-key-left_scroll * {scrollbar-width: none;}
 .suggest div[data-testid="stButton"] > button {background:#000; color:inherit; border:none; width:100%; padding:.8rem 1rem;}
 .course div[data-testid="stButton"] > button {width:100%; padding:1rem; white-space:pre-line;}
 </style>
@@ -177,30 +180,31 @@ if st.session_state.get("selected") not in courses:
 selected = st.session_state.selected
 course_files = courses.get(selected, [])
 
-st.subheader("LMS Buddy")
 with st.container(key="main_row"):
     left, right = st.columns([5, 8], gap="large")
 
 with left:
     st.markdown("### My Learning Modules")
-    if not courses:
-        st.info("No course folders found in your Drive yet.")
-    for name, files in courses.items():
-        with st.container(key=f"course_{name}"):
-            st.markdown('<div class="course">', unsafe_allow_html=True)
-            label = f"📖  **{name}**\n\n{len(files)} resources" + ("  ·  ✅ Selected" if name == selected else "")
-            if st.button(label, key=f"pick_{name}", type="primary" if name == selected else "secondary"):
-                st.session_state.selected = name
-                st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
+    with st.container(height=520, border=False, key="left_scroll"):
+        if not courses:
+            st.info("No course folders found in your Drive yet.")
+        for name, files in courses.items():
+            with st.container(key=f"course_{name}"):
+                st.markdown('<div class="course">', unsafe_allow_html=True)
+                label = f"📖  **{name}**\n\n{len(files)} resources" + ("  ·  ✅ Selected" if name == selected else "")
+                if st.button(label, key=f"pick_{name}", use_container_width=True,
+                             type="primary" if name == selected else "secondary"):
+                    st.session_state.selected = name
+                    st.rerun()
+                st.markdown("</div>", unsafe_allow_html=True)
 
-    st.divider()
-    if selected:
-        st.markdown("### Selected module")
-        st.markdown(f"**{selected}**")
-        for f in course_files:
-            icon = "📄" if f["mimeType"] in ("application/pdf", "application/vnd.google-apps.document") else "📁"
-            st.markdown(f"{icon} [{f['name']}]({f['webViewLink']})" if f.get("webViewLink") else f"{icon} {f['name']}")
+        if selected:
+            st.divider()
+            st.markdown("### Selected module")
+            st.markdown(f"**{selected}**")
+            for f in course_files:
+                icon = "📄" if f["mimeType"] in ("application/pdf", "application/vnd.google-apps.document") else "📁"
+                st.markdown(f"{icon} [{f['name']}]({f['webViewLink']})" if f.get("webViewLink") else f"{icon} {f['name']}")
     c1, c2 = st.columns(2)
     if c1.button("🔄 Sync Drive", use_container_width=True):
         try:

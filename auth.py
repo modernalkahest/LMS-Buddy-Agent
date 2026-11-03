@@ -56,53 +56,80 @@ def _request_code(email: str) -> None:
         st.session_state.otp_hash = _hash(code, email)
 
 
+LOGIN_CSS = """
+<style>
+.block-container {padding-top: 12vh;}
+.login-logo {font-size: 3rem; text-align: center; margin-bottom: 0;}
+.login-title {text-align: center; font-size: 1.8rem; font-weight: 700; margin: 0;}
+.login-sub {text-align: center; opacity: .7; margin: .25rem 0 1.25rem;}
+.st-key-otp_code input {text-align: center; font-size: 1.8rem; letter-spacing: .6rem; font-family: monospace;}
+.st-key-login_card div[data-testid="stFormSubmitButton"] button {width: 100%;}
+</style>
+"""
+
+
+def _card_header(subtitle: str) -> None:
+    st.markdown(LOGIN_CSS, unsafe_allow_html=True)
+    st.markdown('<p class="login-logo">📚</p><p class="login-title">LMS Buddy</p>', unsafe_allow_html=True)
+    st.markdown(f'<p class="login-sub">{subtitle}</p>', unsafe_allow_html=True)
+
+
 def otp_login() -> None:
     """Render the email → code login flow and stop the script until the user is authenticated."""
     if st.session_state.get("authed"):
         return
 
-    st.title("LMS Buddy")
     email = st.session_state.get("otp_email")
+    _, middle, _ = st.columns([1, 1.1, 1])
 
-    if not email:
-        with st.form("otp_request"):
-            entered = st.text_input("Email address").strip().lower()
-            if st.form_submit_button("Send code") and entered:
+    with middle:
+        if not email:
+            _card_header("Sign in with a one-time code sent to your email")
+            with st.container(border=True, key="login_card"):
+                with st.form("otp_request", border=False):
+                    entered = st.text_input("Email address", placeholder="you@example.com").strip().lower()
+                    send = st.form_submit_button("Send code", type="primary")
+                if send and entered:
+                    try:
+                        with st.spinner("Sending code…"):
+                            _request_code(entered)
+                    except Exception as e:
+                        st.error(f"Could not send the code: {e}")
+                    else:
+                        st.rerun()
+            st.stop()
+
+        _card_header(f"Enter the 6-digit code we sent to<br><b>{email}</b>")
+        with st.container(border=True, key="login_card"):
+            with st.form("otp_verify", border=False):
+                code = st.text_input("Login code", max_chars=6, placeholder="••••••", key="otp_code",
+                                     label_visibility="collapsed").strip()
+                verify = st.form_submit_button("Log in", type="primary")
+            if verify:
+                expected = st.session_state.get("otp_hash")
+                expired = time.time() - st.session_state.otp_sent_at > OTP_TTL
+                if st.session_state.otp_attempts >= MAX_ATTEMPTS or expired:
+                    st.error("This code is no longer valid. Request a new one.")
+                elif expected and hmac.compare_digest(_hash(code, email), expected):
+                    st.session_state.authed = True
+                    for key in ("otp_email", "otp_hash", "otp_sent_at", "otp_attempts"):
+                        st.session_state.pop(key, None)
+                    st.rerun()
+                else:
+                    st.session_state.otp_attempts += 1
+                    st.error("Incorrect code.")
+
+            wait = int(RESEND_COOLDOWN - (time.time() - st.session_state.otp_sent_at))
+            c1, c2 = st.columns(2)
+            if c1.button("Resend code", disabled=wait > 0, use_container_width=True,
+                         help=f"Available in {wait}s" if wait > 0 else None):
                 try:
-                    _request_code(entered)
+                    _request_code(email)
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Could not send the code: {e}")
-                else:
-                    st.rerun()
-        st.stop()
-
-    st.info(f"If **{email}** is authorised, a 6-digit code has been sent. It expires in {OTP_TTL // 60} minutes.")
-    with st.form("otp_verify"):
-        code = st.text_input("Login code", max_chars=6).strip()
-        verify = st.form_submit_button("Log in")
-    if verify:
-        expected = st.session_state.get("otp_hash")
-        expired = time.time() - st.session_state.otp_sent_at > OTP_TTL
-        if st.session_state.otp_attempts >= MAX_ATTEMPTS or expired:
-            st.error("This code is no longer valid. Request a new one.")
-        elif expected and hmac.compare_digest(_hash(code, email), expected):
-            st.session_state.authed = True
-            for key in ("otp_email", "otp_hash", "otp_sent_at", "otp_attempts"):
-                st.session_state.pop(key, None)
-            st.rerun()
-        else:
-            st.session_state.otp_attempts += 1
-            st.error("Incorrect code.")
-
-    wait = int(RESEND_COOLDOWN - (time.time() - st.session_state.otp_sent_at))
-    c1, c2 = st.columns(2)
-    if c1.button("Resend code", disabled=wait > 0, help=f"Available in {wait}s" if wait > 0 else None):
-        try:
-            _request_code(email)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Could not send the code: {e}")
-    if c2.button("Use a different email"):
-        st.session_state.pop("otp_email", None)
-        st.rerun()
+            if c2.button("Change email", use_container_width=True):
+                st.session_state.pop("otp_email", None)
+                st.rerun()
+            st.caption(f"Code expires in {OTP_TTL // 60} minutes. If the address isn't authorised, no code is sent.")
     st.stop()
