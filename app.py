@@ -9,6 +9,8 @@ import time
 import streamlit as st
 from dotenv import load_dotenv
 
+from auth import otp_enabled, otp_login
+
 load_dotenv()  # local runs; on Streamlit Cloud there is no .env and secrets are used instead
 
 st.set_page_config(page_title="LMS Buddy", page_icon="📚", layout="wide")
@@ -33,6 +35,8 @@ def load_secrets_into_env() -> None:
 
 def check_password() -> None:
     """Gate the app behind APP_PASSWORD when set; the app exposes the owner's Drive, so set it on public deploys."""
+    if otp_enabled():
+        return otp_login()
     expected = os.getenv("APP_PASSWORD")
     if not expected or st.session_state.get("authed"):
         return
@@ -63,6 +67,14 @@ CSS = """
 .pill {display:inline-block; padding:2px 12px; border-radius:999px; font-size:.85rem;
        background:rgba(76,175,80,.18); color:#4caf50;}
 div[data-testid="stButton"] > button {text-align:left; justify-content:flex-start; border-radius:12px;}
+@media (min-width: 992px) {
+  /* Pin the chat column; the page scroll then only moves the left column. */
+  .st-key-main_row [data-testid="stColumn"]:last-child,
+  .st-key-main_row [data-testid="column"]:last-child {
+    position: sticky; top: 4rem; align-self: flex-start;
+  }
+  .st-key-chat_scroll {height: calc(100vh - 21rem) !important; min-height: 280px;}
+}
 .suggest div[data-testid="stButton"] > button {background:#000; color:inherit; border:none; width:100%; padding:.8rem 1rem;}
 .course div[data-testid="stButton"] > button {width:100%; padding:1rem; white-space:pre-line;}
 </style>
@@ -166,7 +178,8 @@ selected = st.session_state.selected
 course_files = courses.get(selected, [])
 
 st.subheader("LMS Buddy")
-left, right = st.columns([5, 8], gap="large")
+with st.container(key="main_row"):
+    left, right = st.columns([5, 8], gap="large")
 
 with left:
     st.markdown("### My Learning Modules")
@@ -208,7 +221,7 @@ with right:
         st.divider()
 
         pending = st.session_state.pop("pending", None)
-        with st.container(height=520, border=False):
+        with st.container(height=520, border=False, key="chat_scroll"):
             if not st.session_state.messages and not pending:
                 st.markdown("#### What would you like to explore?")
                 st.caption("Suggested questions")
