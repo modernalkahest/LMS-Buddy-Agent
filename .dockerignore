@@ -1,0 +1,8 @@
+.venv/
+.git/
+__pycache__/
+.env
+credentials.json
+token.json
+faiss_index/
+.streamlit/secrets.toml
